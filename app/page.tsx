@@ -3,90 +3,133 @@
 import { useEffect, useState } from 'react'
 import Papa from 'papaparse'
 
-type Content = { contentId: string; title: string }
-type Recommendation = { contentId: string; recommendedContentId: string; score: string }
+type ColabRecommendation = { contentId: string; recommendations: string[] }
+type ContentFilteringRecommendation = { contentId: string; scores: Record<string, number> }
 
 export default function Home() {
-  const [contents, setContents] = useState<Content[]>([])
-  const [recommender1, setRecommender1] = useState<Recommendation[]>([])
-  const [recommender2, setRecommender2] = useState<Recommendation[]>([])
+  const [availableIds, setAvailableIds] = useState<string[]>([])
+  const [colabRecs, setColabRecs] = useState<ColabRecommendation[]>([])
+  const [contentFilteringRecs, setContentFilteringRecs] = useState<ContentFilteringRecommendation[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   useEffect(() => {
-    const loadData = async () => {
-      const parse = async (filePath: string): Promise<any[]> => {
-        const res = await fetch(filePath)
-        const text = await res.text()
-        return new Promise((resolve) =>
-          Papa.parse(text, {
-            header: true,
-            skipEmptyLines: true,
-            complete: (results) => resolve(results.data as any[]),
-          })
-        )
-      }
+    const parseWithHeader = async (filePath: string): Promise<any[]> => {
+      const res = await fetch(filePath)
+      const text = await res.text()
+      return new Promise((resolve) =>
+        Papa.parse(text, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (results) => resolve(results.data as any[]),
+        })
+      )
+    }
 
-      const [contentData, rec1, rec2] = await Promise.all([
-        parse('/shared_articles.csv'),
-        parse('/colab_recommender.csv'),
-        parse('/content_filtering_results.csv'),
+    const parseWithoutHeader = async (filePath: string): Promise<string[][]> => {
+      const res = await fetch(filePath)
+      const text = await res.text()
+      return new Promise((resolve) =>
+        Papa.parse<string[]>(text, {
+          header: false,
+          skipEmptyLines: true,
+          complete: (results) => resolve(results.data as string[][]),
+        })
+      )
+    }
+
+    const loadData = async () => {
+      const [colabRawRows, filterRaw] = await Promise.all([
+        parseWithoutHeader('/colab_recommender.csv'),
+        parseWithHeader('/content_filtering_results.csv'),
       ])
 
-      setContents(contentData)
-      setRecommender1(rec1)
-      setRecommender2(rec2)
+      // Skip the header row in colab recommender manually
+      const [_, ...dataRows] = colabRawRows
+
+      const colabParsed: ColabRecommendation[] = dataRows.map((row) => ({
+        contentId: row[0]?.trim(),
+        recommendations: row.slice(2, 7).map((val) => val?.trim() ?? ''),
+      }))
+      setColabRecs(colabParsed)
+
+      const filterParsed: ContentFilteringRecommendation[] = filterRaw.map((row: any) => {
+        const contentId = String(row.contentId).trim()
+        const scores: Record<string, number> = {}
+        for (const key in row) {
+          if (key !== 'contentId') {
+            const score = parseFloat(row[key])
+            if (!isNaN(score)) {
+              scores[key.trim()] = score
+            }
+          }
+        }
+        return { contentId, scores }
+      })
+      setContentFilteringRecs(filterParsed)
+
+      // Merge unique IDs
+      const uniqueIds = new Set<string>()
+      colabParsed.forEach((row) => uniqueIds.add(row.contentId))
+      filterParsed.forEach((row) => uniqueIds.add(row.contentId))
+      setAvailableIds(Array.from(uniqueIds).sort())
     }
 
     loadData()
   }, [])
 
-  const getTop5 = (data: Recommendation[]) => {
+  const getTop5Colab = () => {
     if (!selectedId) return []
-    const filtered = data.filter((r) => r.contentId === selectedId)
-    return filtered
-      .sort((a, b) => parseFloat(b.score) - parseFloat(a.score))
+    return colabRecs.find((rec) => rec.contentId === selectedId)?.recommendations || []
+  }
+
+  const getTop5Filter = () => {
+    if (!selectedId) return []
+    const found = contentFilteringRecs.find((rec) => rec.contentId === selectedId?.trim())
+    if (!found) return []
+    return Object.entries(found.scores)
+      .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
-      .map((rec) => ({
-        ...rec,
-        title: contents.find((c) => c.contentId === rec.recommendedContentId)?.title || 'Unknown',
-      }))
+      .map(([contentId]) => contentId)
   }
 
   return (
-    <main className="p-6 max-w-3xl mx-auto">
+    <main className="p-3 max-w-5xl mx-auto">
       <h1 className="text-2xl font-bold mb-4">Recommendation Viewer</h1>
 
       <select
-        className="p-2 border rounded mb-6 w-full"
+        className="p-2 border rounded mb-8 w-full h-10 bg-white text-black"
         onChange={(e) => setSelectedId(e.target.value)}
         value={selectedId || ''}
       >
-        <option value="">Select an article</option>
-        {contents.map((item) => (
-          <option key={item.contentId} value={item.contentId}>
-            {item.title}
+        <option value="">Select a content ID</option>
+        {availableIds.map((id) => (
+          <option key={id} value={id}>
+            {id}
           </option>
         ))}
       </select>
 
       {selectedId && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
-            <h2 className="text-xl font-semibold mb-2">Top 5 from Recommender 1</h2>
+            <h2 className="text-xl font-semibold mb-2">Top 5 from Collaborative Filtering</h2>
             <ul className="list-disc list-inside">
-              {getTop5(recommender1).map((rec, idx) => (
-                <li key={idx}>{rec.title} (score: {rec.score})</li>
+              {getTop5Colab().map((val, idx) => (
+                <li key={idx}>{val?.slice(0, 35)}</li>
               ))}
             </ul>
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold mb-2">Top 5 from Recommender 2</h2>
+            <h2 className="text-xl font-semibold mb-2">Top 5 from Content Filter</h2>
             <ul className="list-disc list-inside">
-              {getTop5(recommender2).map((rec, idx) => (
-                <li key={idx}>{rec.title} (score: {rec.score})</li>
+              {getTop5Filter().map((id, idx) => (
+                <li key={idx}>{id}</li>
               ))}
             </ul>
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold mb-2">Top 5 from Wide and Deep Model</h2>
           </div>
         </div>
       )}
