@@ -11,6 +11,10 @@ export default function Home() {
   const [colabRecs, setColabRecs] = useState<ColabRecommendation[]>([])
   const [contentFilteringRecs, setContentFilteringRecs] = useState<ContentFilteringRecommendation[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [azureRecs, setAzureRecs] = useState<{ contentId: string; score: number }[]>([])
+  const [articleTitles, setArticleTitles] = useState<Record<string, string>>({})
+
+
 
   useEffect(() => {
     const parseWithHeader = async (filePath: string): Promise<any[]> => {
@@ -38,9 +42,10 @@ export default function Home() {
     }
 
     const loadData = async () => {
-      const [colabRawRows, filterRaw] = await Promise.all([
+      const [colabRawRows, filterRaw, sharedRaw] = await Promise.all([
         parseWithoutHeader('/colab_recommender.csv'),
         parseWithHeader('/content_filtering_results.csv'),
+        parseWithHeader('/shared_articles.csv'),
       ])
 
       // Skip the header row in colab recommender manually
@@ -67,15 +72,32 @@ export default function Home() {
       })
       setContentFilteringRecs(filterParsed)
 
+      const titleMap: Record<string, string> = {}
+      for (const row of sharedRaw) {
+        const id = row.contentId?.trim()
+        const title = row.title?.trim()
+        if (id && title) {
+          titleMap[id] = title
+        }
+      }
+      setArticleTitles(titleMap)
+
       // Merge unique IDs
       const uniqueIds = new Set<string>()
       colabParsed.forEach((row) => uniqueIds.add(row.contentId))
       filterParsed.forEach((row) => uniqueIds.add(row.contentId))
       setAvailableIds(Array.from(uniqueIds).sort())
     }
-
+    
     loadData()
   }, [])
+
+  useEffect(() => {
+    if (selectedId) {
+      fetchAzureRecs(selectedId);
+    }
+  }, [selectedId]);
+  
 
   const getTop5Colab = () => {
     if (!selectedId) return []
@@ -91,6 +113,39 @@ export default function Home() {
       .slice(0, 5)
       .map(([contentId]) => contentId)
   }
+
+  const fetchAzureRecs = async (selected: string) => {
+    const personId = "692689608292948400"; // or any valid static user ID
+    const contentIds = availableIds.filter((id) => id !== selected); // predict all other items
+  
+    const res = await fetch("/api/routes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ personId, contentIds }),
+    });
+  
+    const data = await res.json();
+    console.log("Azure returned:", data); 
+  
+    // Azure may return fields like "Item" and "Scored Rating"
+    // ✅ Adjust for Azure's wrapping of results
+    const resultsArray = data;
+    console.log("Sample Azure result:", resultsArray[0]);
+
+
+    const cleaned = resultsArray
+      .map((d: any) => ({
+        contentId: d.Item,
+        score: d["Scored Rating"],
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+
+      console.log("Cleaned top 5 Azure Recs:", cleaned);
+
+    setAzureRecs(cleaned);
+    ; 
+  };
 
   return (
     <main className="p-3 max-w-5xl mx-auto">
@@ -129,7 +184,14 @@ export default function Home() {
             </ul>
           </div>
           <div>
-            <h2 className="text-xl font-semibold mb-2">Top 5 from Wide and Deep Model</h2>
+          <h2 className="text-xl font-semibold mb-2">Top 5 from Azure SVD Model</h2>
+            <ul className="list-disc list-inside">
+              {azureRecs.map((rec, idx) => (
+                <li key={idx}>
+                  {articleTitles[rec.contentId] || rec.contentId} ({rec.score.toFixed(2)})</li>
+              ))}
+            </ul>
+
           </div>
         </div>
       )}

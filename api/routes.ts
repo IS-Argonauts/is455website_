@@ -1,1 +1,0 @@
-// Put the endpoint for Azure in here!
